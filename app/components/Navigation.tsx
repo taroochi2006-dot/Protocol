@@ -1,12 +1,13 @@
 'use client'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { LayoutDashboard, CalendarCheck, TrendingUp, Briefcase, ListTodo, LogOut } from 'lucide-react'
+import { LayoutDashboard, CalendarCheck, TrendingUp, Briefcase, ListTodo, LogOut, Newspaper } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/habits', label: 'Habits', icon: CalendarCheck },
+  { href: '/news', label: 'News', icon: Newspaper },
   { href: '/stocks', label: 'Stocks', icon: TrendingUp },
   { href: '/portfolio', label: 'Portfolio', icon: Briefcase },
   { href: '/todo', label: 'Tasks', icon: ListTodo },

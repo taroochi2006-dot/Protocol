@@ -1,4 +1,4 @@
 #!/bin/bash
-export PATH="/Users/taroochi/.protocol-node/node-v20.11.0-darwin-arm64/bin:$PATH"
-cd "/Users/taroochi/digital-product"
+export PATH="/opt/homebrew/bin:$PATH"
+cd /Users/robertomunoz/Protocol
 exec npm start

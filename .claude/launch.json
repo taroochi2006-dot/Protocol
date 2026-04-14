@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "protocol-app",
-      "runtimeExecutable": "/tmp/node-v20.11.0-darwin-arm64/bin/npm",
+      "runtimeExecutable": "/opt/homebrew/bin/npm",
       "runtimeArgs": ["run", "dev", "--", "--port", "3131"],
       "port": 3131
     }

@@ -70,3 +70,27 @@
 - Local:         http://localhost:3000
 - Network:       http://10.135.23.15:3000
 ✓ Ready in 150ms
+
+> digital-product@0.1.0 start
+> next start
+
+▲ Next.js 16.2.3
+- Local:         http://localhost:3000
+- Network:       http://10.110.238.171:3000
+✓ Ready in 132ms
+⚠ `eslint` configuration in next.config.ts is no longer supported. See more info here: https://nextjs.org/docs/app/api-reference/cli/next#next-lint-options
+⚠ Invalid next.config.ts options detected: 
+⚠     Unrecognized key(s) in object: 'eslint'
+⚠ See more info here: https://nextjs.org/docs/messages/invalid-next-config
+
+> digital-product@0.1.0 start
+> next start
+
+▲ Next.js 16.2.3
+- Local:         http://localhost:3000
+- Network:       http://10.110.238.171:3000
+✓ Ready in 168ms
+⚠ `eslint` configuration in next.config.ts is no longer supported. See more info here: https://nextjs.org/docs/app/api-reference/cli/next#next-lint-options
+⚠ Invalid next.config.ts options detected: 
+⚠     Unrecognized key(s) in object: 'eslint'
+⚠ See more info here: https://nextjs.org/docs/messages/invalid-next-config
