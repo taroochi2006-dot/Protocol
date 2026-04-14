@@ -126,6 +126,11 @@ export default function StockChart({ symbol, currentPrice }: Props) {
             data={points}
             margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
             onMouseLeave={() => setHovered(null)}
+            onMouseMove={(state) => {
+              if (state.activePayload?.length) {
+                setHovered(state.activePayload[0].payload as ChartPoint)
+              }
+            }}
           >
             <defs>
               <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
@@ -153,21 +158,18 @@ export default function StockChart({ symbol, currentPrice }: Props) {
             />
             <Tooltip
               content={({ active, payload }) => {
-                if (active && payload?.length) {
-                  const pt = payload[0].payload as ChartPoint
-                  if (hovered?.t !== pt.t) setHovered(pt)
-                  return (
-                    <div className="bg-surface border border-gold-border rounded-lg px-3 py-2 shadow-xl">
-                      <p className="text-cream font-num font-bold text-sm">{fmtPrice(pt.c)}</p>
-                      <p className="text-muted text-xs mt-0.5">{formatLabel(pt.t, period)}</p>
-                      <div className="flex gap-3 mt-1.5 text-xs text-muted">
-                        <span>H: <span className="text-cream font-num">{fmtPrice(pt.h)}</span></span>
-                        <span>L: <span className="text-cream font-num">{fmtPrice(pt.l)}</span></span>
-                      </div>
+                if (!active || !payload?.length) return null
+                const pt = payload[0].payload as ChartPoint
+                return (
+                  <div className="bg-surface border border-gold-border rounded-lg px-3 py-2 shadow-xl">
+                    <p className="text-cream font-num font-bold text-sm">{fmtPrice(pt.c)}</p>
+                    <p className="text-muted text-xs mt-0.5">{formatLabel(pt.t, period)}</p>
+                    <div className="flex gap-3 mt-1.5 text-xs text-muted">
+                      <span>H: <span className="text-cream font-num">{fmtPrice(pt.h)}</span></span>
+                      <span>L: <span className="text-cream font-num">{fmtPrice(pt.l)}</span></span>
                     </div>
-                  )
-                }
-                return null
+                  </div>
+                )
               }}
               cursor={{ stroke: color, strokeWidth: 1, strokeDasharray: '4 2' }}
             />
