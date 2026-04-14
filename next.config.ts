@@ -5,9 +5,8 @@ const nextConfig: NextConfig = {
   eslint: { ignoreDuringBuilds: true },
   images: {
     remotePatterns: [
-      { protocol: 'https', hostname: '*.yimg.com' },
-      { protocol: 'https', hostname: 'media.zenfs.com' },
-      { protocol: 'https', hostname: 's.yimg.com' },
+      { protocol: 'https', hostname: '**' },
+      { protocol: 'http', hostname: '**' },
     ],
   },
 }
