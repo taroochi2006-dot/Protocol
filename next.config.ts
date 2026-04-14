@@ -1,7 +1,13 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  /* config options here */
-};
+  images: {
+    remotePatterns: [
+      { protocol: 'https', hostname: '*.yimg.com' },
+      { protocol: 'https', hostname: 'media.zenfs.com' },
+      { protocol: 'https', hostname: 's.yimg.com' },
+    ],
+  },
+}
 
-export default nextConfig;
+export default nextConfig
