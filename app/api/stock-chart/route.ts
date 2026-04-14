@@ -13,12 +13,13 @@ export async function GET(req: NextRequest) {
 
   // period → [interval, outputsize]
   const config: Record<string, [string, number]> = {
-    '1D': ['5min',  78],
-    '1W': ['1h',    35],
-    '1M': ['1day',  23],
-    '3M': ['1day',  66],
-    '1Y': ['1day', 253],
-    '5Y': ['1week',261],
+    '1D':  ['5min',   78],
+    '1W':  ['1h',     35],
+    '1M':  ['1day',   23],
+    '3M':  ['1day',   66],
+    '1Y':  ['1day',  253],
+    '5Y':  ['1week', 261],
+    'ALL': ['1month', 480], // up to 40 years of monthly candles
   }
 
   const [interval, outputsize] = config[period] ?? config['1M']

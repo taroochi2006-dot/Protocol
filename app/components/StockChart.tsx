@@ -8,7 +8,7 @@ import {
 
 interface ChartPoint { t: number; c: number; h: number; l: number; o: number; v: number }
 
-const PERIODS = ['1D', '1W', '1M', '3M', '1Y', '5Y'] as const
+const PERIODS = ['1D', '1W', '1M', '3M', '1Y', '5Y', 'ALL'] as const
 type Period = typeof PERIODS[number]
 
 function formatLabel(ts: number, period: Period) {
@@ -18,6 +18,9 @@ function formatLabel(ts: number, period: Period) {
   }
   if (period === '1W' || period === '1M' || period === '3M') {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  }
+  if (period === 'ALL') {
+    return d.toLocaleDateString('en-US', { year: 'numeric' })
   }
   return d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
 }
