@@ -1,7 +1,14 @@
 'use client'
-import { useState, useEffect } from 'react'
-import { RefreshCw, ExternalLink, TrendingUp, TrendingDown, Minus, Search, X } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { RefreshCw, ExternalLink, TrendingUp, TrendingDown, Search, X } from 'lucide-react'
 import { getStockOfTheDay, STOCKS_LIST } from '@/lib/stocks-list'
+import { AUTOCOMPLETE_EXTRA, StockSuggestion } from '@/lib/stocks-autocomplete'
+
+// Combined autocomplete pool: STOCKS_LIST entries + extra list
+const AUTOCOMPLETE_POOL: StockSuggestion[] = [
+  ...STOCKS_LIST.map(s => ({ symbol: s.symbol, name: s.name, sector: s.sector })),
+  ...AUTOCOMPLETE_EXTRA.filter(e => !STOCKS_LIST.some(s => s.symbol === e.symbol)),
+]
 
 interface NewsArticle {
   uuid: string; title: string; publisher: string; link: string
@@ -58,6 +65,21 @@ export default function StocksPage() {
   const [searchResult, setSearchResult] = useState<StockInfo | null>(null)
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
+  const [suggestions, setSuggestions] = useState<StockSuggestion[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [activeSuggestion, setActiveSuggestion] = useState(-1)
+  const searchRef = useRef<HTMLDivElement>(null)
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false)
+      }
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [])
 
   // Date-based seed for deterministic SOTD display
   const sotdIndex = (() => {
@@ -80,9 +102,23 @@ export default function StocksPage() {
       .catch(() => setNewsLoading(false))
   }, [])
 
-  async function handleSearch() {
-    const sym = search.trim().toUpperCase()
+  function updateSuggestions(val: string) {
+    const upper = val.toUpperCase().trim()
+    if (!upper) { setSuggestions([]); setShowSuggestions(false); return }
+    const symbolMatches = AUTOCOMPLETE_POOL.filter(s => s.symbol.startsWith(upper))
+    const nameMatches = AUTOCOMPLETE_POOL.filter(
+      s => !s.symbol.startsWith(upper) && s.name.toLowerCase().includes(upper.toLowerCase())
+    )
+    const combined = [...symbolMatches, ...nameMatches].slice(0, 8)
+    setSuggestions(combined)
+    setShowSuggestions(combined.length > 0)
+    setActiveSuggestion(-1)
+  }
+
+  async function handleSearchWithSym(sym: string) {
     if (!sym) return
+    setShowSuggestions(false)
+    setSuggestions([])
     setSearching(true)
     setSearchError('')
     try {
@@ -94,6 +130,35 @@ export default function StocksPage() {
       setSearchError('Search failed. Please try again.')
     }
     setSearching(false)
+  }
+
+  async function handleSearch() {
+    await handleSearchWithSym(search.trim().toUpperCase())
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (!showSuggestions || suggestions.length === 0) {
+      if (e.key === 'Enter') handleSearch()
+      return
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setActiveSuggestion(prev => Math.min(prev + 1, suggestions.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setActiveSuggestion(prev => Math.max(prev - 1, -1))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (activeSuggestion >= 0) {
+        const s = suggestions[activeSuggestion]
+        setSearch(s.symbol)
+        handleSearchWithSym(s.symbol)
+      } else {
+        handleSearch()
+      }
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false)
+    }
   }
 
   const upPct = sotdInfo && sotdInfo.fiftyTwoWeekHigh && sotdInfo.currentPrice
@@ -111,15 +176,35 @@ export default function StocksPage() {
       {/* Search */}
       <div className="mb-6 card p-4">
         <p className="label-sm mb-3">Lookup Any Stock</p>
-        <div className="flex gap-2">
-          <input
-            className="input-base flex-1 uppercase"
-            placeholder="Enter ticker (e.g. AAPL, NVDA, TSLA)"
-            value={search}
-            onChange={e => setSearch(e.target.value.toUpperCase())}
-            onKeyDown={e => e.key === 'Enter' && handleSearch()}
-          />
-          <button className="btn-gold flex items-center gap-1.5" onClick={handleSearch} disabled={searching}>
+        <div className="flex gap-2 relative" ref={searchRef}>
+          <div className="relative flex-1">
+            <input
+              className="input-base w-full uppercase"
+              placeholder="Ticker or company name (e.g. AAPL, Apple, NVDA)"
+              value={search}
+              onChange={e => { setSearch(e.target.value.toUpperCase()); updateSuggestions(e.target.value) }}
+              onKeyDown={handleKeyDown}
+              onFocus={() => search && setShowSuggestions(suggestions.length > 0)}
+              autoComplete="off"
+            />
+            {/* Dropdown */}
+            {showSuggestions && suggestions.length > 0 && (
+              <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-lg border border-gold-border bg-surface shadow-xl overflow-hidden">
+                {suggestions.map((s, i) => (
+                  <button
+                    key={s.symbol}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-surface2 transition-colors ${i === activeSuggestion ? 'bg-surface2' : ''}`}
+                    onMouseDown={e => { e.preventDefault(); setSearch(s.symbol); handleSearchWithSym(s.symbol) }}
+                  >
+                    <span className="text-gold font-bold text-sm w-14 shrink-0">{s.symbol}</span>
+                    <span className="text-cream text-xs flex-1 truncate">{s.name}</span>
+                    <span className="text-muted text-xs shrink-0">{s.sector}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button className="btn-gold flex items-center gap-1.5 shrink-0" onClick={handleSearch} disabled={searching}>
             {searching ? <RefreshCw size={12} className="animate-spin" /> : <Search size={12} />}
             Search
           </button>
