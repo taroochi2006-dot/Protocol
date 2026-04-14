@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+export const dynamic = 'force-dynamic'
+
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
 function fmt(d: Date) {
@@ -12,55 +14,54 @@ function daysAgo(n: number) {
   return d
 }
 
-// Stooq daily/weekly CSV → array of {t, o, h, l, c, v}
-async function stooqDaily(sym: string, d1: Date, d2: Date, interval = 'd') {
-  const url = `https://stooq.com/q/d/l/?s=${sym.toLowerCase()}.us&d1=${fmt(d1)}&d2=${fmt(d2)}&i=${interval}`
+async function stooqCandles(sym: string, d1: Date, d2: Date, interval: string) {
+  const s = `${sym.toLowerCase()}.us`
+  const url = `https://stooq.com/q/d/l/?s=${s}&d1=${fmt(d1)}&d2=${fmt(d2)}&i=${interval}`
   const res = await fetch(url, { headers: { 'User-Agent': UA } })
   if (!res.ok) throw new Error(`Stooq ${res.status}`)
   const text = await res.text()
-  const lines = text.trim().split('\n').slice(1) // skip header
-  if (lines.length < 2) throw new Error('No stooq data')
 
-  return lines
-    .map(line => {
-      const p = line.split(',')
-      if (p.length < 5) return null
-      const t = new Date(p[0]).getTime()
-      if (isNaN(t)) return null
-      return { t, o: +p[1], h: +p[2], l: +p[3], c: +p[4], v: +p[5] || 0 }
-    })
-    .filter(Boolean)
-}
+  // Strip \r, split on \n, skip header row, drop blanks
+  const lines = text
+    .replace(/\r/g, '')
+    .trim()
+    .split('\n')
+    .slice(1)
+    .filter(l => l.trim().length > 0)
 
-// Stooq intraday (5-min or hourly) — returns today/recent intraday candles
-async function stooqIntraday(sym: string, interval: '5' | 'h') {
-  const today = new Date()
-  const d1 = daysAgo(3) // go back 3 days to cover weekends/gaps
-  const url = `https://stooq.com/q/d/l/?s=${sym.toLowerCase()}.us&d1=${fmt(d1)}&d2=${fmt(today)}&i=${interval}`
-  const res = await fetch(url, { headers: { 'User-Agent': UA } })
-  if (!res.ok) throw new Error(`Stooq intraday ${res.status}`)
-  const text = await res.text()
-  const lines = text.trim().split('\n').slice(1)
-  if (lines.length < 2) throw new Error('No intraday data')
+  if (lines.length === 0) throw new Error('No stooq data')
 
-  return lines
-    .map(line => {
-      const p = line.split(',')
-      // Intraday CSV: Date, Time, Open, High, Low, Close, Volume
-      if (p.length >= 7) {
-        const t = new Date(`${p[0]}T${p[1]}`).getTime()
-        if (isNaN(t)) return null
-        return { t, o: +p[2], h: +p[3], l: +p[4], c: +p[5], v: +p[6] || 0 }
-      }
-      // Fallback: Date, Open, High, Low, Close, Volume (no time col)
-      if (p.length >= 5) {
-        const t = new Date(p[0]).getTime()
-        if (isNaN(t)) return null
-        return { t, o: +p[1], h: +p[2], l: +p[3], c: +p[4], v: +p[5] || 0 }
-      }
-      return null
-    })
-    .filter(Boolean)
+  const points = lines.map(line => {
+    const p = line.trim().split(',')
+    // Stooq daily:    Date, Open, High, Low, Close, Volume
+    // Stooq intraday: Date, Time, Open, High, Low,  Close, Volume
+    const hasTime = p.length >= 7
+
+    const dateStr  = p[0].trim()
+    const timeStr  = hasTime ? p[1].trim() : '00:00:00'
+    const openIdx  = hasTime ? 2 : 1
+    const highIdx  = hasTime ? 3 : 2
+    const lowIdx   = hasTime ? 4 : 3
+    const closeIdx = hasTime ? 5 : 4
+    const volIdx   = hasTime ? 6 : 5
+
+    const t = new Date(`${dateStr}T${timeStr}`).getTime()
+    if (isNaN(t)) return null
+
+    const c = parseFloat(p[closeIdx])
+    if (isNaN(c)) return null
+
+    return {
+      t,
+      o: parseFloat(p[openIdx])  || c,
+      h: parseFloat(p[highIdx])  || c,
+      l: parseFloat(p[lowIdx])   || c,
+      c,
+      v: parseInt(p[volIdx])     || 0,
+    }
+  }).filter(Boolean)
+
+  return points
 }
 
 export async function GET(req: NextRequest) {
@@ -68,30 +69,36 @@ export async function GET(req: NextRequest) {
   const period  = req.nextUrl.searchParams.get('period') || '1D'
   if (!symbol) return NextResponse.json({ error: 'symbol required' }, { status: 400 })
 
-  const sym = symbol.toUpperCase()
+  const sym   = symbol.toUpperCase()
   const today = new Date()
 
   try {
-    let points: { t: number; o: number; h: number; l: number; c: number; v: number }[] | null[] = []
+    let points
 
     if (period === '1H') {
-      // 5-min intraday, slice to last ~12 bars (60 min)
-      const all = await stooqIntraday(sym, '5')
+      // Try 5-min intraday; slice to last ~12 bars (~60 min)
+      const all = await stooqCandles(sym, daysAgo(3), today, '5')
       points = all.slice(-12)
     } else if (period === '1D') {
-      // Full day of 5-min bars
-      points = await stooqIntraday(sym, '5')
-      // Keep only today's bars (or latest session)
-      const latestDay = points.length ? new Date((points[points.length - 1] as {t:number}).t).toDateString() : null
-      if (latestDay) points = points.filter(p => new Date((p as {t:number}).t).toDateString() === latestDay)
+      // Full intraday session (5-min bars, last 3 days to cover gaps)
+      const all = await stooqCandles(sym, daysAgo(3), today, '5')
+      // Keep only the most recent trading session
+      if (all.length > 0) {
+        const lastDate = new Date((all[all.length - 1] as {t:number}).t).toDateString()
+        points = all.filter(p => new Date((p as {t:number}).t).toDateString() === lastDate)
+      } else {
+        points = all
+      }
     } else if (period === '1W') {
-      points = await stooqDaily(sym, daysAgo(7), today)
+      points = await stooqCandles(sym, daysAgo(7),       today, 'd')
     } else if (period === '1M') {
-      points = await stooqDaily(sym, daysAgo(30), today)
+      points = await stooqCandles(sym, daysAgo(30),      today, 'd')
     } else if (period === '1Y') {
-      points = await stooqDaily(sym, daysAgo(365), today)
+      points = await stooqCandles(sym, daysAgo(365),     today, 'd')
     } else if (period === '5Y') {
-      points = await stooqDaily(sym, daysAgo(365 * 5), today, 'w') // weekly candles for 5Y
+      points = await stooqCandles(sym, daysAgo(365 * 5), today, 'w')
+    } else {
+      points = await stooqCandles(sym, daysAgo(30),      today, 'd')
     }
 
     if (!points || points.length === 0) {
