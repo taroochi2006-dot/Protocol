@@ -8,11 +8,14 @@ import {
 
 interface ChartPoint { t: number; c: number; h: number; l: number; o: number; v: number }
 
-const PERIODS = ['1W', '1M', '3M', '1Y', '5Y'] as const
+const PERIODS = ['1D', '1W', '1M', '3M', '1Y', '5Y'] as const
 type Period = typeof PERIODS[number]
 
 function formatLabel(ts: number, period: Period) {
   const d = new Date(ts)
+  if (period === '1D') {
+    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+  }
   if (period === '1W' || period === '1M' || period === '3M') {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   }
@@ -29,7 +32,7 @@ interface Props {
 }
 
 export default function StockChart({ symbol, currentPrice }: Props) {
-  const [period, setPeriod] = useState<Period>('1M')
+  const [period, setPeriod] = useState<Period>('1D')
   const [points, setPoints] = useState<ChartPoint[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

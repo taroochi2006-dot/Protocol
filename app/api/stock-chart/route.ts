@@ -1,26 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-export const dynamic = 'force-dynamic'
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY!
-
-async function finnhubCandles(symbol: string, resolution: string, fromTs: number) {
-  const now = Math.floor(Date.now() / 1000)
-  const url = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=${resolution}&from=${fromTs}&to=${now}&token=${FINNHUB_KEY}`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`Finnhub ${res.status}`)
+// Yahoo Finance v8 chart — no API key needed
+async function yahooChart(symbol: string, interval: string, range: string, revalidate: number) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&range=${range}`
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': UA,
+      'Accept': 'application/json',
+      'Referer': 'https://finance.yahoo.com/',
+    },
+    next: { revalidate },
+  })
+  if (!res.ok) throw new Error(`Yahoo ${res.status}`)
   const data = await res.json()
-  if (data.s === 'no_data' || !Array.isArray(data.t) || data.t.length === 0) {
-    throw new Error('No data')
-  }
-  return data.t.map((ts: number, i: number) => ({
-    t: ts * 1000,
-    o: data.o[i],
-    h: data.h[i],
-    l: data.l[i],
-    c: data.c[i],
-    v: data.v[i],
-  }))
+  const result = data?.chart?.result?.[0]
+  if (!result) throw new Error('No data')
+
+  const timestamps: number[] = result.timestamp || []
+  const q = result.indicators?.quote?.[0] || {}
+
+  return timestamps
+    .map((ts: number, i: number) => {
+      const c = q.close?.[i]
+      if (c == null || isNaN(c)) return null
+      return {
+        t: ts * 1000,
+        o: q.open?.[i]   ?? c,
+        h: q.high?.[i]   ?? c,
+        l: q.low?.[i]    ?? c,
+        c,
+        v: q.volume?.[i] ?? 0,
+      }
+    })
+    .filter(Boolean)
 }
 
 export async function GET(req: NextRequest) {
@@ -29,20 +43,33 @@ export async function GET(req: NextRequest) {
   if (!symbol) return NextResponse.json({ error: 'symbol required' }, { status: 400 })
 
   const sym = symbol.toUpperCase()
-  const now = Math.floor(Date.now() / 1000)
 
-  const periodMap: Record<string, { resolution: string; from: number }> = {
-    '1W': { resolution: 'D', from: now - 7   * 86400 },
-    '1M': { resolution: 'D', from: now - 30  * 86400 },
-    '3M': { resolution: 'D', from: now - 90  * 86400 },
-    '1Y': { resolution: 'D', from: now - 365 * 86400 },
-    '5Y': { resolution: 'W', from: now - 5 * 365 * 86400 },
+  // period → [interval, range, cache-seconds]
+  const config: Record<string, [string, string, number]> = {
+    '1D': ['5m',  '1d',  300],
+    '1W': ['1h',  '5d',  1800],
+    '1M': ['1d',  '1mo', 3600],
+    '3M': ['1d',  '3mo', 3600],
+    '1Y': ['1d',  '1y',  86400],
+    '5Y': ['1wk', '5y',  86400],
   }
 
-  const config = periodMap[period] ?? periodMap['1M']
+  const [interval, range, revalidate] = config[period] ?? config['1M']
 
   try {
-    const points = await finnhubCandles(sym, config.resolution, config.from)
+    let points = await yahooChart(sym, interval, range, revalidate)
+
+    // For 1D: keep only today's session (or last session)
+    if (period === '1D' && points.length > 0) {
+      const lastDay = new Date((points[points.length - 1] as {t:number}).t).toDateString()
+      const todayPoints = points.filter(p => new Date((p as {t:number}).t).toDateString() === lastDay)
+      if (todayPoints.length > 0) points = todayPoints
+    }
+
+    if (points.length === 0) {
+      return NextResponse.json({ error: 'No data for this period' }, { status: 404 })
+    }
+
     return NextResponse.json({ points, period, symbol: sym })
   } catch (e: unknown) {
     return NextResponse.json(
