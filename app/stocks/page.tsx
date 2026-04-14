@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import { RefreshCw, ExternalLink, TrendingUp, TrendingDown, Search, X } from 'lucide-react'
 import { getStockOfTheDay, STOCKS_LIST } from '@/lib/stocks-list'
 import { AUTOCOMPLETE_EXTRA, StockSuggestion } from '@/lib/stocks-autocomplete'
+import StockChart from '@/app/components/StockChart'
 
 // Combined autocomplete pool: STOCKS_LIST entries + extra list
 const AUTOCOMPLETE_POOL: StockSuggestion[] = [
@@ -263,6 +264,8 @@ export default function StocksPage() {
                 </span>
               </div>
             )}
+
+            <StockChart symbol={searchResult.symbol} currentPrice={searchResult.currentPrice} />
           </div>
         )}
       </div>
@@ -357,6 +360,8 @@ export default function StocksPage() {
                 Loading live data...
               </div>
             )}
+
+            <StockChart symbol={sotd.symbol} currentPrice={sotdInfo?.currentPrice} />
           </div>
         </div>
 
