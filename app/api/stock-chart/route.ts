@@ -1,96 +1,97 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-export const dynamic = 'force-dynamic'
-
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY!
 
-// Yahoo Finance v8 chart — handles 1H / 1D / 1W / 1M
-async function getYahooChart(symbol: string, interval: string, range: string) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&range=${range}`
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': UA,
-      'Accept': 'application/json',
-      'Referer': 'https://finance.yahoo.com/',
-    },
-  })
-  if (!res.ok) throw new Error(`Yahoo chart ${res.status}`)
-  const data = await res.json()
-  const result = data?.chart?.result?.[0]
-  if (!result) throw new Error('No Yahoo chart data')
-
-  const timestamps: number[] = result.timestamp || []
-  const q = result.indicators?.quote?.[0] || {}
-
-  return timestamps
-    .map((ts: number, i: number) => ({
-      t: ts * 1000,
-      c: q.close?.[i] ?? null,
-      h: q.high?.[i] ?? null,
-      l: q.low?.[i] ?? null,
-      o: q.open?.[i] ?? null,
-      v: q.volume?.[i] ?? null,
-    }))
-    .filter(p => p.c != null)
+function fmt(d: Date) {
+  return d.toISOString().slice(0, 10).replace(/-/g, '')
 }
 
-// Finnhub candle — handles 1Y / 5Y (daily/weekly, free tier OK)
-async function getFinnhubChart(symbol: string, resolution: string, fromTs: number) {
-  const now = Math.floor(Date.now() / 1000)
-  const url = `https://finnhub.io/api/v1/stock/candle?symbol=${symbol}&resolution=${resolution}&from=${fromTs}&to=${now}&token=${FINNHUB_KEY}`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`Finnhub ${res.status}`)
-  const data = await res.json()
-  if (data.s === 'no_data' || !Array.isArray(data.t)) throw new Error('No Finnhub data')
+function daysAgo(n: number) {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return d
+}
 
-  return data.t.map((ts: number, i: number) => ({
-    t: ts * 1000,
-    c: data.c[i],
-    h: data.h[i],
-    l: data.l[i],
-    o: data.o[i],
-    v: data.v[i],
-  }))
+// Stooq daily/weekly CSV → array of {t, o, h, l, c, v}
+async function stooqDaily(sym: string, d1: Date, d2: Date, interval = 'd') {
+  const url = `https://stooq.com/q/d/l/?s=${sym.toLowerCase()}.us&d1=${fmt(d1)}&d2=${fmt(d2)}&i=${interval}`
+  const res = await fetch(url, { headers: { 'User-Agent': UA } })
+  if (!res.ok) throw new Error(`Stooq ${res.status}`)
+  const text = await res.text()
+  const lines = text.trim().split('\n').slice(1) // skip header
+  if (lines.length < 2) throw new Error('No stooq data')
+
+  return lines
+    .map(line => {
+      const p = line.split(',')
+      if (p.length < 5) return null
+      const t = new Date(p[0]).getTime()
+      if (isNaN(t)) return null
+      return { t, o: +p[1], h: +p[2], l: +p[3], c: +p[4], v: +p[5] || 0 }
+    })
+    .filter(Boolean)
+}
+
+// Stooq intraday (5-min or hourly) — returns today/recent intraday candles
+async function stooqIntraday(sym: string, interval: '5' | 'h') {
+  const today = new Date()
+  const d1 = daysAgo(3) // go back 3 days to cover weekends/gaps
+  const url = `https://stooq.com/q/d/l/?s=${sym.toLowerCase()}.us&d1=${fmt(d1)}&d2=${fmt(today)}&i=${interval}`
+  const res = await fetch(url, { headers: { 'User-Agent': UA } })
+  if (!res.ok) throw new Error(`Stooq intraday ${res.status}`)
+  const text = await res.text()
+  const lines = text.trim().split('\n').slice(1)
+  if (lines.length < 2) throw new Error('No intraday data')
+
+  return lines
+    .map(line => {
+      const p = line.split(',')
+      // Intraday CSV: Date, Time, Open, High, Low, Close, Volume
+      if (p.length >= 7) {
+        const t = new Date(`${p[0]}T${p[1]}`).getTime()
+        if (isNaN(t)) return null
+        return { t, o: +p[2], h: +p[3], l: +p[4], c: +p[5], v: +p[6] || 0 }
+      }
+      // Fallback: Date, Open, High, Low, Close, Volume (no time col)
+      if (p.length >= 5) {
+        const t = new Date(p[0]).getTime()
+        if (isNaN(t)) return null
+        return { t, o: +p[1], h: +p[2], l: +p[3], c: +p[4], v: +p[5] || 0 }
+      }
+      return null
+    })
+    .filter(Boolean)
 }
 
 export async function GET(req: NextRequest) {
   const symbol = req.nextUrl.searchParams.get('symbol')
-  const period = req.nextUrl.searchParams.get('period') || '1D'
+  const period  = req.nextUrl.searchParams.get('period') || '1D'
   if (!symbol) return NextResponse.json({ error: 'symbol required' }, { status: 400 })
 
   const sym = symbol.toUpperCase()
-  const now = Math.floor(Date.now() / 1000)
+  const today = new Date()
 
   try {
-    let points
+    let points: { t: number; o: number; h: number; l: number; c: number; v: number }[] | null[] = []
 
     if (period === '1H') {
-      // 5-min candles over 1 day, then slice to last 60 min of data
-      const all = await getYahooChart(sym, '5m', '1d')
-      points = all.slice(-12) // last ~60 minutes
+      // 5-min intraday, slice to last ~12 bars (60 min)
+      const all = await stooqIntraday(sym, '5')
+      points = all.slice(-12)
     } else if (period === '1D') {
-      points = await getYahooChart(sym, '5m', '1d')
+      // Full day of 5-min bars
+      points = await stooqIntraday(sym, '5')
+      // Keep only today's bars (or latest session)
+      const latestDay = points.length ? new Date((points[points.length - 1] as {t:number}).t).toDateString() : null
+      if (latestDay) points = points.filter(p => new Date((p as {t:number}).t).toDateString() === latestDay)
     } else if (period === '1W') {
-      points = await getYahooChart(sym, '1h', '5d')
+      points = await stooqDaily(sym, daysAgo(7), today)
     } else if (period === '1M') {
-      points = await getYahooChart(sym, '1d', '1mo')
+      points = await stooqDaily(sym, daysAgo(30), today)
     } else if (period === '1Y') {
-      // Try Yahoo first, fall back to Finnhub daily
-      try {
-        points = await getYahooChart(sym, '1d', '1y')
-      } catch {
-        points = await getFinnhubChart(sym, 'D', now - 365 * 86400)
-      }
+      points = await stooqDaily(sym, daysAgo(365), today)
     } else if (period === '5Y') {
-      // Try Yahoo first, fall back to Finnhub weekly
-      try {
-        points = await getYahooChart(sym, '1wk', '5y')
-      } catch {
-        points = await getFinnhubChart(sym, 'W', now - 5 * 365 * 86400)
-      }
-    } else {
-      points = await getYahooChart(sym, '5m', '1d')
+      points = await stooqDaily(sym, daysAgo(365 * 5), today, 'w') // weekly candles for 5Y
     }
 
     if (!points || points.length === 0) {
