@@ -1,41 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+export const dynamic = 'force-dynamic'
 
-// Yahoo Finance v8 chart — no API key needed
-async function yahooChart(symbol: string, interval: string, range: string, revalidate: number) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&range=${range}`
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': UA,
-      'Accept': 'application/json',
-      'Referer': 'https://finance.yahoo.com/',
-    },
-    next: { revalidate },
-  })
-  if (!res.ok) throw new Error(`Yahoo ${res.status}`)
-  const data = await res.json()
-  const result = data?.chart?.result?.[0]
-  if (!result) throw new Error('No data')
-
-  const timestamps: number[] = result.timestamp || []
-  const q = result.indicators?.quote?.[0] || {}
-
-  return timestamps
-    .map((ts: number, i: number) => {
-      const c = q.close?.[i]
-      if (c == null || isNaN(c)) return null
-      return {
-        t: ts * 1000,
-        o: q.open?.[i]   ?? c,
-        h: q.high?.[i]   ?? c,
-        l: q.low?.[i]    ?? c,
-        c,
-        v: q.volume?.[i] ?? 0,
-      }
-    })
-    .filter(Boolean)
-}
+const TD_KEY = process.env.TWELVEDATA_API_KEY!
 
 export async function GET(req: NextRequest) {
   const symbol = req.nextUrl.searchParams.get('symbol')
@@ -44,31 +11,42 @@ export async function GET(req: NextRequest) {
 
   const sym = symbol.toUpperCase()
 
-  // period → [interval, range, cache-seconds]
-  const config: Record<string, [string, string, number]> = {
-    '1D': ['5m',  '1d',  300],
-    '1W': ['1h',  '5d',  1800],
-    '1M': ['1d',  '1mo', 3600],
-    '3M': ['1d',  '3mo', 3600],
-    '1Y': ['1d',  '1y',  86400],
-    '5Y': ['1wk', '5y',  86400],
+  // period → [interval, outputsize]
+  const config: Record<string, [string, number]> = {
+    '1D': ['5min',  78],
+    '1W': ['1h',    35],
+    '1M': ['1day',  23],
+    '3M': ['1day',  66],
+    '1Y': ['1day', 253],
+    '5Y': ['1week',261],
   }
 
-  const [interval, range, revalidate] = config[period] ?? config['1M']
+  const [interval, outputsize] = config[period] ?? config['1M']
 
   try {
-    let points = await yahooChart(sym, interval, range, revalidate)
+    const url = `https://api.twelvedata.com/time_series?symbol=${sym}&interval=${interval}&outputsize=${outputsize}&apikey=${TD_KEY}`
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`Twelve Data ${res.status}`)
 
-    // For 1D: keep only today's session (or last session)
-    if (period === '1D' && points.length > 0) {
-      const lastDay = new Date((points[points.length - 1] as {t:number}).t).toDateString()
-      const todayPoints = points.filter(p => new Date((p as {t:number}).t).toDateString() === lastDay)
-      if (todayPoints.length > 0) points = todayPoints
-    }
+    const data = await res.json()
 
-    if (points.length === 0) {
+    if (data.status === 'error') throw new Error(data.message || 'Twelve Data error')
+    if (!Array.isArray(data.values) || data.values.length === 0) {
       return NextResponse.json({ error: 'No data for this period' }, { status: 404 })
     }
+
+    // Twelve Data returns newest-first — reverse to chronological order
+    const points = data.values
+      .reverse()
+      .map((v: { datetime: string; open: string; high: string; low: string; close: string; volume: string }) => ({
+        t: new Date(v.datetime).getTime(),
+        o: parseFloat(v.open),
+        h: parseFloat(v.high),
+        l: parseFloat(v.low),
+        c: parseFloat(v.close),
+        v: parseInt(v.volume) || 0,
+      }))
+      .filter((p: { c: number }) => !isNaN(p.c))
 
     return NextResponse.json({ points, period, symbol: sym })
   } catch (e: unknown) {
