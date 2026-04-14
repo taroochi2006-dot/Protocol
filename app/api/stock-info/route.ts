@@ -3,113 +3,103 @@ import { NextRequest, NextResponse } from 'next/server'
 export const dynamic = 'force-dynamic'
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+const FINNHUB_KEY = process.env.FINNHUB_API_KEY!
 
-// --- Stooq current quote ---
+// --- Stooq: current price ---
 async function getStooqPrice(sym: string) {
-  const stooqSym = `${sym.toLowerCase()}.us`
-  const url = `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSym)}&f=sd2t2ohlcvp&h&e=csv`
+  const url = `https://stooq.com/q/l/?s=${sym.toLowerCase()}.us&f=sd2t2ohlcvp&h&e=csv`
   const res = await fetch(url, { headers: { 'User-Agent': UA } })
   if (!res.ok) throw new Error(`Stooq ${res.status}`)
   const text = await res.text()
   const lines = text.trim().split('\n')
-  if (lines.length < 2) throw new Error('No data from stooq')
-  const vals = lines[1].split(',')
-  if (vals.length < 9) throw new Error('Unexpected stooq format')
-  const [, , , open, high, low, close, volume, prev] = vals
-  const price = parseFloat(close)
-  const prevClose = parseFloat(prev)
+  if (lines.length < 2) throw new Error('No stooq data')
+  const v = lines[1].split(',')
+  if (v.length < 9) throw new Error('Bad stooq format')
+  const price = parseFloat(v[6])
+  const prev = parseFloat(v[8])
   if (isNaN(price)) throw new Error('Invalid price')
   return {
     price,
-    prevClose,
-    change: price - prevClose,
-    changePct: prevClose > 0 ? (price - prevClose) / prevClose : 0,
-    dayHigh: parseFloat(high) || null,
-    dayLow: parseFloat(low) || null,
-    open: parseFloat(open) || null,
-    volume: parseInt(volume) || null,
+    change: price - prev,
+    changePct: prev > 0 ? (price - prev) / prev : 0,
+    dayHigh: parseFloat(v[4]) || null,
+    dayLow: parseFloat(v[5]) || null,
+    open: parseFloat(v[3]) || null,
+    volume: parseInt(v[7]) || null,
   }
 }
 
-// --- Stooq 1-year historical → 52W high/low ---
-async function getStooq52W(sym: string) {
+// --- Finnhub: company profile (name, market cap) ---
+async function getFinnhubProfile(sym: string) {
   try {
-    const stooqSym = `${sym.toLowerCase()}.us`
-    const today = new Date()
-    const oneYearAgo = new Date(today)
-    oneYearAgo.setFullYear(today.getFullYear() - 1)
-    const fmt = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '')
-    const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(stooqSym)}&d1=${fmt(oneYearAgo)}&d2=${fmt(today)}&i=d`
-
-    const res = await fetch(url, {
-      headers: { 'User-Agent': UA },
-      next: { revalidate: 86400 }, // cache 24h
-    })
+    const res = await fetch(
+      `https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${FINNHUB_KEY}`
+    )
     if (!res.ok) return null
-    const text = await res.text()
-    const lines = text.trim().split('\n').slice(1) // skip header row
-    if (lines.length < 5) return null
-
-    let high52 = -Infinity
-    let low52 = Infinity
-
-    for (const line of lines) {
-      const parts = line.split(',')
-      // CSV: Date, Open, High, Low, Close, Volume
-      if (parts.length >= 5) {
-        const h = parseFloat(parts[2])
-        const l = parseFloat(parts[3])
-        if (!isNaN(h) && h > high52) high52 = h
-        if (!isNaN(l) && l < low52) low52 = l
-      }
-    }
-
+    const d = await res.json()
     return {
-      fiftyTwoWeekHigh: high52 > -Infinity ? high52 : null,
-      fiftyTwoWeekLow: low52 < Infinity ? low52 : null,
+      name: d.name || null,
+      marketCap: d.marketCapitalization ? d.marketCapitalization * 1_000_000 : null,
     }
-  } catch {
-    return null
-  }
+  } catch { return null }
 }
 
-// --- Yahoo Finance v7 quote → P/E, market cap, beta, analyst target ---
-async function getYahooFundamentals(sym: string) {
+// --- Finnhub: basic financials (52W high/low, P/E, beta) ---
+async function getFinnhubMetrics(sym: string) {
   try {
-    const fields = [
-      'longName', 'shortName', 'marketCap', 'trailingPE', 'forwardPE',
-      'beta', 'targetMeanPrice', 'recommendationKey',
-      'dividendYield', 'revenueGrowth', 'grossMargins',
-    ].join(',')
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${sym}&fields=${fields}`
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': UA,
-        'Accept': 'application/json, text/plain, */*',
-        'Referer': 'https://finance.yahoo.com/',
-        'Origin': 'https://finance.yahoo.com',
-      },
-      next: { revalidate: 3600 }, // cache 1h
-    })
+    const res = await fetch(
+      `https://finnhub.io/api/v1/stock/metric?symbol=${sym}&metric=all&token=${FINNHUB_KEY}`
+    )
     if (!res.ok) return null
-    const data = await res.json()
-    const q = data?.quoteResponse?.result?.[0]
-    if (!q) return null
+    const d = await res.json()
+    const m = d.metric || {}
     return {
-      name: q.longName || q.shortName || null,
-      marketCap: q.marketCap || null,
-      pe: q.trailingPE || null,
-      forwardPE: q.forwardPE || null,
-      beta: q.beta || null,
-      targetMeanPrice: q.targetMeanPrice || null,
-      recommendationKey: q.recommendationKey || null,
-      dividendYield: q.dividendYield || null,
-      revenueGrowth: q.revenueGrowth || null,
-      grossMargins: q.grossMargins || null,
+      fiftyTwoWeekHigh: m['52WeekHigh'] ?? null,
+      fiftyTwoWeekLow: m['52WeekLow'] ?? null,
+      pe: m.peTTM ?? null,
+      beta: m.beta ?? null,
+      dividendYield: m.dividendYieldIndicatedAnnual ?? null,
+      revenueGrowth: m.revenueGrowthTTMYoy != null ? m.revenueGrowthTTMYoy / 100 : null,
+      grossMargins: m.grossMarginTTM != null ? m.grossMarginTTM / 100 : null,
     }
-  } catch {
-    return null
-  }
+  } catch { return null }
+}
+
+// --- Finnhub: analyst price target ---
+async function getFinnhubTarget(sym: string) {
+  try {
+    const res = await fetch(
+      `https://finnhub.io/api/v1/stock/price-target?symbol=${sym}&token=${FINNHUB_KEY}`
+    )
+    if (!res.ok) return null
+    const d = await res.json()
+    return { targetMeanPrice: d.targetMean ?? null }
+  } catch { return null }
+}
+
+// --- Finnhub: analyst recommendation ---
+async function getFinnhubRec(sym: string) {
+  try {
+    const res = await fetch(
+      `https://finnhub.io/api/v1/stock/recommendation?symbol=${sym}&token=${FINNHUB_KEY}`
+    )
+    if (!res.ok) return null
+    const d = await res.json()
+    if (!Array.isArray(d) || d.length === 0) return null
+    const latest = d[0]
+    const buy = (latest.strongBuy || 0) + (latest.buy || 0)
+    const hold = latest.hold || 0
+    const sell = (latest.sell || 0) + (latest.strongSell || 0)
+    const total = buy + hold + sell
+    if (total === 0) return null
+    const buyPct = buy / total
+    const sellPct = sell / total
+    let key = 'hold'
+    if (buyPct >= 0.6) key = 'buy'
+    else if (buyPct >= 0.75) key = 'strongBuy'
+    else if (sellPct >= 0.5) key = 'sell'
+    return { recommendationKey: key }
+  } catch { return null }
 }
 
 export async function GET(req: NextRequest) {
@@ -119,34 +109,35 @@ export async function GET(req: NextRequest) {
   const sym = symbol.toUpperCase()
 
   try {
-    // Fire all three sources in parallel
-    const [priceData, w52, fundamentals] = await Promise.all([
+    const [price, profile, metrics, target, rec] = await Promise.all([
       getStooqPrice(sym),
-      getStooq52W(sym),
-      getYahooFundamentals(sym),
+      getFinnhubProfile(sym),
+      getFinnhubMetrics(sym),
+      getFinnhubTarget(sym),
+      getFinnhubRec(sym),
     ])
 
     return NextResponse.json({
       symbol: sym,
-      name: fundamentals?.name || sym,
-      currentPrice: priceData.price,
-      change: priceData.change,
-      changePct: priceData.changePct,
-      marketCap: fundamentals?.marketCap ?? null,
-      pe: fundamentals?.pe ?? null,
-      forwardPE: fundamentals?.forwardPE ?? null,
-      fiftyTwoWeekHigh: w52?.fiftyTwoWeekHigh ?? null,
-      fiftyTwoWeekLow: w52?.fiftyTwoWeekLow ?? null,
-      beta: fundamentals?.beta ?? null,
-      targetMeanPrice: fundamentals?.targetMeanPrice ?? null,
-      recommendationKey: fundamentals?.recommendationKey ?? null,
-      dividendYield: fundamentals?.dividendYield ?? null,
-      revenueGrowth: fundamentals?.revenueGrowth ?? null,
-      grossMargins: fundamentals?.grossMargins ?? null,
-      avgVolume: priceData.volume,
-      dayHigh: priceData.dayHigh,
-      dayLow: priceData.dayLow,
-      open: priceData.open,
+      name: profile?.name || sym,
+      currentPrice: price.price,
+      change: price.change,
+      changePct: price.changePct,
+      marketCap: profile?.marketCap ?? null,
+      pe: metrics?.pe ?? null,
+      forwardPE: null,
+      fiftyTwoWeekHigh: metrics?.fiftyTwoWeekHigh ?? null,
+      fiftyTwoWeekLow: metrics?.fiftyTwoWeekLow ?? null,
+      beta: metrics?.beta ?? null,
+      targetMeanPrice: target?.targetMeanPrice ?? null,
+      recommendationKey: rec?.recommendationKey ?? null,
+      dividendYield: metrics?.dividendYield ?? null,
+      revenueGrowth: metrics?.revenueGrowth ?? null,
+      grossMargins: metrics?.grossMargins ?? null,
+      avgVolume: price.volume,
+      dayHigh: price.dayHigh,
+      dayLow: price.dayLow,
+      open: price.open,
     })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error'
